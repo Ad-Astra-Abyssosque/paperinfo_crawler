@@ -1,5 +1,8 @@
+import os
+
+
 # chrome path
-chrome_path = "C:/Program Files/Google/Chrome/Application/chrome.exe"
+chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 
 # Interval in seconds to wait for retrying after a failed request
 retry_interval = 15
@@ -17,7 +20,9 @@ req_headers = {
     "Sec-Fetch-Mode": "navigate",
 }
 
-cookie_path = "D:/pycode/chromedriver-user-data/"
+cookie_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "chromedriver-user-data")
+if not os.path.exists(cookie_path):
+    os.mkdir(cookie_path)
 
 # conference/journal -> publisher
 cj_pub_dict = {

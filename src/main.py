@@ -1,42 +1,46 @@
+import logging.config
+import os
+import random
+import sys
 import argparse
-import asyncio
-import logging
 import pickle
+import traceback
 
 import bibtexparser
 import bibtexparser.model
-import requests
-import zendriver as zd
-from tqdm import tqdm
+
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+logging.config.fileConfig("logging.conf")
+logger = logging.getLogger()
+for noisy_logger in ["websockets", "asyncio", "zendriver", "urllib3", "uc.connection"]:
+    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
 
 import dblp
-import entry_acm
-import entry_elsevier
-import entry_ieee
-import entry_iospress
-import entry_ndss
-import entry_springer
-import entry_usenix
-from settings import chrome_path, cj_pub_dict, cookie_path
+from settings import cj_pub_dict
+from src.data import PaperInfo
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-handler = logging.StreamHandler()
-handler.setLevel(logging.DEBUG)
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+from src.save_result import save_result, get_result_num
+from crawler.factory import get_crawler
+import utils
+
+# logger.setLevel(logging.DEBUG)
+# handler = logging.StreamHandler()
+# handler.setLevel(logging.DEBUG)
+# formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+# handler.setFormatter(formatter)
+# logger.addHandler(handler)
 
 
-publisher_module_dict = {
-    "ieee": entry_ieee,
-    "acm": entry_acm,
-    "springer": entry_springer,
-    "usenix": entry_usenix,
-    "ndss": entry_ndss,
-    "elsevier": entry_elsevier,
-    "iospress": entry_iospress,
-}
+# publisher_module_dict = {
+#     "ieee": entry_ieee,
+#     "acm": entry_acm,
+#     "springer": entry_springer,
+#     "usenix": entry_usenix,
+#     "ndss": entry_ndss,
+#     "elsevier": entry_elsevier,
+#     "iospress": entry_iospress,
+# }
 
 
 def collect_conf_metadata(
@@ -44,17 +48,23 @@ def collect_conf_metadata(
     year: str,
     publisher: str,
     need_abstract: bool,
-    export_bib_path: str,
     dblp_req_itv: float,
+    abs_itv: int,
     save_pickle: bool,
-) -> list:
+    output: str,
+    count: int = -1,
+    skip: list[int] = [],
+) -> list[PaperInfo]:
+
+    # 构造dblp的url
     conf_url, entry_type_in_url = dblp.get_conf_url(name, year)
     if conf_url is None:
         logger.error("Cannot get dblp URL for {}, {}".format(name, year))
         return []
-    entry_metadata_list = dblp.get_dblp_page_content(
-        conf_url, dblp_req_itv, entry_type_in_url
-    )
+
+    # 通过dblp获取所有paper的title和url
+    existed_num = get_result_num(file_path=output)
+    entry_metadata_list: list[PaperInfo] = dblp.get_dblp_page_content(url=conf_url, req_itv=dblp_req_itv, type=entry_type_in_url, existed_num=existed_num, count=count)
     logger.debug("Number of papers: {}".format(len(entry_metadata_list)))
     if len(entry_metadata_list) <= 0:
         logger.warning("No paper found in {}, {}".format(name, year))
@@ -67,15 +77,7 @@ def collect_conf_metadata(
             pickle.dump(entry_metadata_list, f)
 
     if need_abstract:
-        asyncio.run(
-            collect_abstract(
-                name,
-                entry_metadata_list,
-                export_bib_path,
-                publisher,
-                dblp_req_itv,
-            )
-        )
+        collect_abstract2(entry_metadata_list=entry_metadata_list, publisher=publisher, output=output, req_itv=abs_itv, count=count, skip=skip)
     return entry_metadata_list
 
 
@@ -84,12 +86,15 @@ def collect_journal_metadata(
     volume: str,
     publisher: str,
     need_abstract: bool,
-    export_bib_path: str,
+    output: str,
     dblp_req_itv: float,
     save_pickle: bool,
+    count: int = -1,
+    skip: list[int] = [],
 ) -> list:
+    existed_num = get_result_num(file_path=output)
     entry_metadata_list = dblp.get_dblp_page_content(
-        dblp.get_journal_url(name, volume), dblp_req_itv, "journal"
+        dblp.get_journal_url(name, volume), dblp_req_itv, "journal", existed_num=existed_num, count=count
     )
     logger.debug("Number of papers: {}".format(len(entry_metadata_list)))
     if len(entry_metadata_list) <= 0:
@@ -103,189 +108,95 @@ def collect_journal_metadata(
             pickle.dump(entry_metadata_list, f)
 
     if need_abstract:
-        asyncio.run(
-            collect_abstract(
-                name,
-                entry_metadata_list,
-                export_bib_path,
-                publisher,
-                req_itv,
-            )
-        )
+        # asyncio.run(
+        #     collect_abstract(
+        #         name,
+        #         entry_metadata_list,
+        #         export_bib_path,
+        #         publisher,
+        #         dblp_req_itv,
+        #     )
+        # )
+        collect_abstract2(entry_metadata_list, publisher, output, req_itv=dblp_req_itv, count=count, skip=skip)
 
     return entry_metadata_list
 
 
-async def collect_abstract_impl(
-    entry_func,
-    library: bibtexparser.Library,
-    entry_metadata_list: list,
-    need_webdriver: bool,
-    req_itv: float = 10,
-    driver=None,
-):
-    for entry_metadata in tqdm(entry_metadata_list):
-        if need_webdriver:
-            if entry_func == entry_iospress:
-                # special case for iospress
-                abs_session = requests.Session()
-                abstract = await entry_func.get_full_abstract(
-                    abs_session, entry_metadata[1], req_itv, driver
-                )
-                abs_session.close()
-            else:
-                abstract = await entry_func.get_full_abstract(
-                    entry_metadata[1], driver, req_itv
-                )
-        else:
-            abs_session = requests.Session()
-            abstract = entry_func.get_full_abstract(
-                abs_session, entry_metadata[1], req_itv
-            )
-            abs_session.close()
-        # if parse failed, the number of entries in library is 0, print warning and process the next paper.
-        tmp_library = bibtexparser.parse_string(entry_metadata[2])
-        if len(tmp_library.entries) != 1:
-            logger.warning(
-                'Cannot parse bibtex string to entry of paper "{}", string is: {}.'.format(
-                    entry_metadata[0], repr(entry_metadata[2])
-                )
-            )
-            continue
-
-        if abstract is not None:
-            abstract_field = bibtexparser.model.Field("abstract", repr(abstract)[1:-1])
-            tmp_library.entries[0].set_field(abstract_field)
-        else:
-            logger.warning(
-                'Cannot collect abstract of paper "{}".'.format(entry_metadata[0])
-            )
-        library.add(tmp_library.blocks)
-
-    return library
-
-
-async def collect_abstract(
-    name: str,
-    entry_metadata_list: list,
-    export_bib_path: str,
+def collect_abstract2(
+    entry_metadata_list: list[PaperInfo],
     publisher: str,
+    output: str,
+    count: int,
     req_itv: float = 10,
+    skip: list[int] = []
 ):
-    library = bibtexparser.Library()
 
-    logger.debug("Publisher: {}.".format(publisher))
+    logger.info("Publisher: {}.".format(publisher))
 
-    if publisher == "ieee":
-        browser_config = zd.Config(
-            headless=True,
-            user_data_dir=cookie_path,
-            browser_executable_path=chrome_path,
-        )
-        browser = await zd.start(config=browser_config)
-        library = await collect_abstract_impl(
-            entry_ieee,
-            library,
-            entry_metadata_list,
-            need_webdriver=True,
-            req_itv=req_itv,
-            driver=browser,
-        )
-        await browser.stop()
-    elif publisher == "elsevier" or publisher == "iospress" or publisher == "acm":
-        browser_config = zd.Config(
-            headless=False,
-            user_data_dir=cookie_path,
-            browser_executable_path=chrome_path,
-        )
-        browser = await zd.start(config=browser_config)
-        if publisher == "elsevier":
-            library = await collect_abstract_impl(
-                entry_elsevier,
-                library,
-                entry_metadata_list,
-                need_webdriver=True,
-                req_itv=req_itv,
-                driver=browser,
-            )
-        elif publisher == "iospress":
-            library = await collect_abstract_impl(
-                entry_iospress,
-                library,
-                entry_metadata_list,
-                need_webdriver=True,
-                req_itv=req_itv,
-                driver=browser,
-            )
-        elif publisher == "acm":
-            library = await collect_abstract_impl(
-                entry_acm,
-                library,
-                entry_metadata_list,
-                need_webdriver=True,
-                req_itv=req_itv,
-                driver=browser,
-            )
-        await browser.stop()
-    else:
-        selected_module = publisher_module_dict.get(publisher)
-        if selected_module is not None:
-            library = await collect_abstract_impl(
-                selected_module,
-                library,
-                entry_metadata_list,
-                need_webdriver=False,
-                req_itv=req_itv,
-            )
-        else:
-            logger.error("Invalid publisher.")
-            return
+    crawler = get_crawler(publisher, interval=req_itv)
+    logger.info(f"Get crawler: {crawler.__class__.__name__}")
+    try:
+        crawler.prepare()
+        # 获取已经爬取的数量
+        start_idx = get_result_num(file_path=output)
+        end_idx = len(entry_metadata_list) if count < 0 else start_idx + count
+        for i, paper in enumerate(entry_metadata_list[start_idx:end_idx]):
+            logger.info(f"[{i+start_idx+1}] '{paper.title}'")
+            logger.info(f"[{i+start_idx+1}] URL: {paper.url}")
+            if i+start_idx+1 in skip:
+                logger.critical("SKIP this one")
+                continue
+            abstract = crawler.crawl(paper.url)
+            paper.abstract = abstract
 
-    logger.debug("entries in bibtex db: {}.".format(len(library.entries)))
-    # 由于bibtexparser.write_file暂时无法指定编码，只能先写入字符串后手动保存到文件，
-    # 参考 https://github.com/sciunto-org/python-bibtexparser/pull/405
-    bib_str = bibtexparser.write_string(library)
-    with open(export_bib_path, "w", encoding="utf-8") as f:
-        f.write(bib_str)
+            # update paper's bib as well
+            tmp_library = bibtexparser.parse_string(paper.bibtex)
+            if len(tmp_library.entries) != 1:
+                logger.warning(
+                    'Cannot parse bibtex string to entry of paper "{}", string is: {}.'.format(
+                        paper.title, repr(paper.bibtex)
+                    )
+                )
+            else:
+                abstract_field = bibtexparser.model.Field("abstract", repr(abstract)[1:-1])
+                tmp_library.entries[0].set_field(abstract_field)
+                paper.bibtex = bibtexparser.write_string(tmp_library)
+
+            save_result(file_path=output, papers=[paper], detailed=False)
+
+            rand_int = random.randint(-10, 10)
+            sleep_time = req_itv + rand_int
+            logger.info(f"Sleep for {sleep_time}s...")
+            utils.count_down(seconds=int(sleep_time))
+    except Exception:
+        logger.error(traceback.format_exc())
+    finally:
+        # stop web driver if needed
+        crawler.stop()
 
 
 def collect_abstract_from_dblp_pkl(
     pkl_filename: str,
     name: str,
     publisher: str,
-    export_bib_path: str,
+    output: str,
     req_itv: float,
 ):
+    raise NotImplementedError
     with open(pkl_filename, "rb") as f:
         entry_metadata_list = pickle.load(f)
-    asyncio.run(
-        collect_abstract(
-            name,
-            entry_metadata_list,
-            export_bib_path,
-            publisher,
-            req_itv,
-        )
-    )
+    collect_abstract2(entry_metadata_list, publisher, output, req_itv)
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="Collect paper metadata.")
 
     parser.add_argument("--name", "-n", type=str, required=True, help="会议/期刊标识")
 
     # conference or journal
     grp1 = parser.add_mutually_exclusive_group(required=True)
-    grp1.add_argument(
-        "--year", "-y", type=str, default=None, help="会议举办时间（年）e.g. 2023"
-    )
-    grp1.add_argument(
-        "--volume",
-        "-u",
-        type=str,
-        default=None,
-        help="期刊卷号，格式为单个数字，或要爬取的起止卷号，以短横线连接。e.g. 72-79",
-    )
+    grp1.add_argument("--year", "-y", type=str, default=None, help="会议举办时间（年）e.g. 2023")
+    grp1.add_argument("--volume", "-u", type=str, default=None, help="期刊卷号，格式为单个数字，或要爬取的起止卷号，以短横线连接。e.g. 72-79")
 
     parser.add_argument("--publisher", "-p", type=str, default=None, help="指定出版社")
     parser.add_argument(
@@ -310,13 +221,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--dblp-interval",
-        "-d",
         type=float,
         default=10,
         help="向dblp发送请求的间隔（秒）",
     )
     parser.add_argument(
-        "--interval", "-t", type=float, default=10, help="收集摘要的请求发送间隔（秒）"
+        "--abs-interval", type=float, default=10, help="收集摘要的请求发送间隔（秒）"
     )
     # 保存不含摘要的bibtex不在设计意图内
     parser.add_argument(
@@ -326,6 +236,10 @@ if __name__ == "__main__":
         default=None,
         help="bibtex文件的保存位置，默认是[name][year].bib, 对于期刊，该选项只支持volume为数字的输入（e.g. -u 72），不支持多卷的输入（e.g. -u 72-79）",
     )
+
+    parser.add_argument("-c", "--count", type=int, default=-1)
+    parser.add_argument("-o", "--output", required=True)
+    parser.add_argument("--skip", action='extend', type=int, nargs='+', default=[])
 
     args = parser.parse_args()
 
@@ -357,18 +271,16 @@ if __name__ == "__main__":
                 publisher = args.publisher
     else:
         if publisher is None:
-            print(
-                "Cannot find this conference/journal. Please specify publisher by -p or --publisher."
-            )
+            logger.error("Cannot find this conference/journal. Please specify publisher by -p or --publisher.")
             exit(1)
 
     if need_abs is False and from_pkl_fn is not None:
-        print("--no-abs cannot be set together with --from-pkl (-f).")
+        logger.error("--no-abs cannot be set together with --from-pkl (-f).")
         exit(1)
 
     dblp_req_itv = args.dblp_interval
     # 收集摘要的发送请求时间间隔
-    req_itv = args.interval
+    abs_itv = args.abs_interval
 
     if args.year is None:
         # Journal
@@ -385,7 +297,7 @@ if __name__ == "__main__":
                 volume,
                 need_abs,
                 dblp_req_itv,
-                req_itv,
+                abs_itv,
                 publisher,
                 save_pkl,
                 from_pkl_fn,
@@ -400,12 +312,12 @@ if __name__ == "__main__":
             logger.debug("saved_fn:{}".format(saved_fn))
             if from_pkl_fn is None:
                 collect_journal_metadata(
-                    name, volume, publisher, need_abs, saved_fn, dblp_req_itv, save_pkl
+                    name, volume, publisher, need_abs, args.output, dblp_req_itv, save_pkl
                 )
                 exit(0)
             else:
                 collect_abstract_from_dblp_pkl(
-                    from_pkl_fn, name, publisher, saved_fn, req_itv
+                    from_pkl_fn, name, publisher, args.output, abs_itv
                 )
                 exit(0)
 
@@ -436,30 +348,37 @@ if __name__ == "__main__":
         # Conference
         year = args.year
 
-        if args.save is None:
-            saved_fn = "{}{}.bib".format(name, year)
-        else:
-            saved_fn = args.save
-
         logger.debug(
-            "\nname:{}\nyear:{}\nneed_abs:{}\nsaved_fn:{}\ndblp_req_itv:{}\nreq_itev:{}\npublisher:{}\nsave_pkl:{}\nfrom_pkl_fn:{}\n".format(
+            "\nname:{}\nyear:{}\nneed_abs:{}\ndblp_req_itv:{}\nreq_itev:{}\npublisher:{}\nsave_pkl:{}\nfrom_pkl_fn:{}\n".format(
                 name,
                 year,
                 need_abs,
-                saved_fn,
                 dblp_req_itv,
-                req_itv,
+                abs_itv,
                 publisher,
                 save_pkl,
                 from_pkl_fn,
             )
         )
         if from_pkl_fn is None:
-            collect_conf_metadata(
-                name, year, publisher, need_abs, saved_fn, dblp_req_itv, save_pkl
+            paper_list = collect_conf_metadata(
+                name, year, publisher, need_abs, dblp_req_itv, abs_itv, save_pkl,
+                output=args.output, count=args.count, skip=args.skip
             )
+            # save_result(file_path=args.output, papers=paper_list, detailed=False)
+            # for item in paper_list:
+            #     logger.info('=' * 50)
+            #     logger.info(f'Title: {item.title}')
+            #     logger.info(f'URL: {item.url}')
+            #     logger.info(f'Abstract: {item.abstract}')
         else:
             logger.debug("Collect abstract from dblp pickle file.")
             collect_abstract_from_dblp_pkl(
-                from_pkl_fn, name, publisher, saved_fn, req_itv
+                from_pkl_fn, name, publisher, args.output, abs_itv
             )
+
+
+if __name__ == "__main__":
+
+    logger.info("test")
+    main()

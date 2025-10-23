@@ -1,3 +1,221 @@
+# Paper Info Crawler
+
+> 本项目仅作学习交流使用，使用该项目造成的后果自行承担
+
+
+
+## :book: Supported Conference / Journal
+
+:white_check_mark:：支持
+
+:grey_question:：尚未测试，但应该支持
+
+TODO：待添加
+
+| 会议/期刊       | -n(--name)参数 | Publisher | 是否支持           |
+| --------------- | -------------- | --------- | ------------------ |
+| USENIX Security | uss            | USENIX    | :white_check_mark: |
+| NDSS            | ndss           | NDSS      | :white_check_mark: |
+| CCS             | ccs            | ACM       | :white_check_mark: |
+| S&P             | sp             | IEEE      | :white_check_mark: |
+| USENIX          | usenix         | USENIX    | :white_check_mark: |
+|                 |                |           |                    |
+|                 |                |           |                    |
+|                 |                |           |                    |
+|                 |                |           |                    |
+
+其他：见`src/settings.py`
+
+
+## :rocket: Getting Started
+
+### Requirements
+```
+requests
+beautifulsoup4
+wheel
+bibtexparser
+tqdm
+zendriver
+```
+
+### Run
+```shell
+python main.py <args>
+```
+
+参数说明：
+
+- `-n`/`--name`：会议或期刊名称。支持的会议/期刊对应的参数名称见上表
+- `-y`/`--year`：年份（四位数）e.g. 2023
+- `-u`/`--volume`：期刊卷号，格式为单个数字，或要爬取的起止卷号，以短横线连接。e.g. 72-79
+- `-p`/`--publisher`：指定出版社。正常来说不需要此参数，会根据`name`自动匹配
+- `--no-abs`：添加此选项表示不收集摘要。默认收集。
+- `--dblp-interval`：从dblp数据库收集论文bibtex的间隔。建议此选项的值不要小于10。
+- `--abs-interval`：从出版社收集摘要时的间隔（秒）。建议此项值不要小于10，推荐30秒以上。
+- `-c`/`--count`：收集论文的数量。小于0或不传此参数时表示全部收集。
+- `-o`/`--output`：输出结果的路径（如果路径不存在会自动创建）。目前仅支持json和markdown格式。
+- `--skip`：跳过指定位置的论文。有些论文的url可能无效，导致爬取失败，添加此项以跳过这些论文。
+
+
+示例：
+1. 收集2024年USENIX Security的全部论文
+```shell
+python main.py --name uss --year 2024 --dblp-interval 10 --abs-interval 60 --output ../results/USENIX/uss-2024.json
+```
+2. 收集2023年CCS的前270篇论文（共292篇），并跳过221、222号论文
+```shell
+python main.py --name ccs --year 2024 --dblp-interval 10 --abs-interval 60 --output ../results/CCS/ccs-2024.json --count 270 --skip 221 222
+```
+
+**注意**：
+
+稳妥起见，为了避免ip被封，建议 `dblp-interval`/`abs-interval` 最好设置的大一些，`30`/`60` 比较安全。
+
+## :file_folder: File Structure
+
+```text
+├─dblp_cache
+├─results
+│  ├─CCS
+│  ├─NDSS
+│  └─USENIX
+└─src
+    └─crawler
+
+```
+- chromedriver-user-data：运行时，如果使用浏览器爬取会自动生成
+- dblp_cache：已收集的dblp数据，可用于加速收集，跳过已收集的论文信息。
+- results：已收集的论文数据，可直接使用，不必重复爬取。
+- src：源码
+  - main.py：程序入口
+  - crawler：从出版社收集摘要的crawler
+
+
+
+## Features
+
+### 断点存续
+
+由于会议一年通常收录几百篇论文，爬取时间会很长，受网络等因素影响，爬取可能会中途失败。
+
+因此较原项目新增了断点存续功能：
+- 从dblp爬取信息时，首先尝试从缓存中加载
+- 如果指定的输出文件中已存在结果，则会跳过前面的论文
+- **每条论文信息在爬取后都会及时保存，因此可以放心中断**
+
+
+> 注：为了方便实现，本项目是按照dblp给出的论文**顺序**收集并记录缓存/结果，断点存续时也是根据缓存/结果中记录的个数来跳过的，并非根据每篇论文是否保存判断
+
+### 多种保存格式
+
+支持以csv、md、json、bibtex多种结果保存
+
+根据output文件后缀自动选择
+
+
+
+## :pencil: Note
+
+这里简要介绍工作原理和代码结构，方便阅读和修改
+
+### 核心思想
+
+首先获取会议收录文章的基本信息列表（含每篇论文的doi），再从各大网站上收集摘要
+
+- DBLP数据库收录了各个会议的文章，其url形式规整，可以直接通过会议名称和年份构造
+  - 从中可以获取每篇论文的标题、URL、bibtex，但不含摘要
+- 访问论文URL，该链接会自动重定向到出版社的页面。接下来脚本尝试从页面中获取摘要
+
+
+### Workflow
+
+1. 解析参数，根据name获取对出版商，开始收集 (`main.collect_conf_metada`)
+2. 根据年份和缩写构造DBLP的URL (`dblp.get_conf_url`)
+3. 通过dblp获取所有paper的title和url (`dblp.get_dblp_page_content`)
+    1. 解析html获得title
+    2. 进一步构造请求并解析得到bibtex，其中包含url
+4. 获取摘要 (`main.collect_abstract2`)
+    1. 根据出版社获取对应Crawler，根据类型分为两种Crawler
+    2. 对每一篇论文调用`crawler.crawl(url)`
+    3. 保存数据
+
+### 两种Crawler
+
+根据出版社类型，可以大致将crawler的爬取行为抽象为两种模式：
+1. HtmlAbstractCrawler
+   - 摘要直接包含在html中
+   - 可以直接通过请求获得页面源码，然后解析得到
+2. UiAutomationAbstractCrawler
+   - 摘要是动态渲染，无法直接从html中获取
+   - 或网站对脚本行为有严格检测，很难通过模仿浏览器行为绕过
+   - 需要借助浏览器先获取到页面
+
+### 扩展Crawler？
+
+**1. 如果爬取行为符合`HtmlAbstractCrawler`或`UiAutomationAbstractCrawler`**
+
+继承对应类，然后重写对应的抽象方法即可
+
+```python
+from .html_abstract_crawler import HtmlAbstractCrawler
+from .factory import CrawlerFactory
+
+
+@CrawlerFactory.register("ndss")
+class NDSSAbstractCrawler(HtmlAbstractCrawler):
+
+    @property
+    def css_selector(self) -> str:
+        return "div.entry-content > div.paper-data > p:nth-child(2) > p"
+
+```
+
+**2. 如果不能归类为以上两种**
+
+继承自`BaseAbstractCrawler`，重写`crawl`方法，还可根据需要重写`prepare`和`stop`
+
+```python
+from .base_abstract_crawler import BaseAbstractCrawler
+from .factory import CrawlerFactory
+
+
+@CrawlerFactory.register("new_publisher")
+class MyNewAbstractCrawler(BaseAbstractCrawler):
+
+    @property
+    def css_selector(self) -> str:
+        return "div.entry-content > div.paper-data > p:nth-child(2) > p"
+
+```
+
+**注意：**
+
+不要忘记使用CrawlerFactory注册
+
+```python
+@CrawlerFactory.register("new_publisher")
+```
+
+需要在`__init__.py`中导入新增crawler文件，这样注册代码才会被执行
+
+```python
+from . import factory
+from . import usenix_abstract_crawler
+from . import ieee_abstract_crawler
+from . import acm_abstract_crawler
+from . import iospress_abstract_crawler
+from . import elsevier_abstract_crawler
+from . import ndss_abstract_crawler
+```
+
+
+
+
+---
+
+原仓库README
+
 # 爬取论文元数据和摘要
 
 **注意，本项目不会下载论文，仅获取包括摘要在内的论文元数据。**
