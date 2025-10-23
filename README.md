@@ -1,35 +1,47 @@
+
+
 # Paper Info Crawler
 
 > 本项目仅作学习交流使用，使用该项目造成的后果自行承担
+
+Forked from: [Lraxer's paperinfo_crawler](https://github.com/Lraxer/paperinfo_crawler)
+
+自动化收集会议/期刊论文的基本信息（标题、URL、摘要等），现支持安全四大、软工四大。
+
+已收集的论文信息在`results/`中
 
 
 
 ## :book: Supported Conference / Journal
 
-:white_check_mark:：支持
-
-:grey_question:：尚未测试，但应该支持
-
-TODO：待添加
-
-| 会议/期刊       | -n(--name)参数 | Publisher | 是否支持           |
+| 会议            | -n(--name)参数 | Publisher | 是否支持           |
 | --------------- | -------------- | --------- | ------------------ |
 | USENIX Security | uss            | USENIX    | :white_check_mark: |
 | NDSS            | ndss           | NDSS      | :white_check_mark: |
 | CCS             | ccs            | ACM       | :white_check_mark: |
 | S&P             | sp             | IEEE      | :white_check_mark: |
 | USENIX          | usenix         | USENIX    | :white_check_mark: |
-|                 |                |           |                    |
-|                 |                |           |                    |
-|                 |                |           |                    |
-|                 |                |           |                    |
+| ICSE            | icse           | ACM       | :white_check_mark: |
+| ASE             | ase            | ACM       | :white_check_mark: |
+| FSE (<=2023)    | fse            | ACM       | :white_check_mark: |
+| ISSTA (<=2024)  | issta          | ACM       | :white_check_mark: |
 
-其他：见`src/settings.py`
+部分会议会发表在期刊中，发表的年份、位置和卷号难以对应，下表给出部分已支持的会议
+
+| 期刊  | 年份 | -n(--name)参数 | -u(--volume)参数 | Publisher | 是否支持           |
+| ----- | ---- | -------------- | ---------------- | --------- | ------------------ |
+| FSE   | 2025 | pacmse         | 2                | ACM       | :white_check_mark: |
+| ISSTA | 2025 | pacmse         | 2                | ACM       | :white_check_mark: |
+| FSE   | 2024 | pacmse         | 1                | ACM       | :white_check_mark: |
+
+:grey_question:**其他**：未在上表中的，还有部分见`src/settings.py`，这些尚未测试，但应该支持
+
+
 
 
 ## :rocket: Getting Started
 
-### Requirements
+### Install Requirements
 ```
 requests
 beautifulsoup4
@@ -39,8 +51,25 @@ tqdm
 zendriver
 ```
 
-### Run
 ```shell
+pip install -r requirements-no-version.txt
+```
+
+### Chrome Settings
+
+（目前通过浏览器收集摘要仅支持Chrome）
+
+安装Chrome，并确保chrome的安装路径与`settings.py`中一致
+
+```python
+# settings.py
+chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+```
+
+### Run
+
+```shell
+cd src
 python main.py <args>
 ```
 
@@ -68,6 +97,12 @@ python main.py --name uss --year 2024 --dblp-interval 10 --abs-interval 60 --out
 python main.py --name ccs --year 2024 --dblp-interval 10 --abs-interval 60 --output ../results/CCS/ccs-2024.json --count 270 --skip 221 222
 ```
 
+3. 收集FSE 2025的所有论文（收录在期刊中）
+
+```shell
+python main.py --name pacmse --volume 2 --dblp-interval 10 --abs-interval 60 --output ../results/FSE/fse-2025.json
+```
+
 **注意**：
 
 稳妥起见，为了避免ip被封，建议 `dblp-interval`/`abs-interval` 最好设置的大一些，`30`/`60` 比较安全。
@@ -75,25 +110,31 @@ python main.py --name ccs --year 2024 --dblp-interval 10 --abs-interval 60 --out
 ## :file_folder: File Structure
 
 ```text
+├─(chromedriver-user-data)
 ├─dblp_cache
 ├─results
 │  ├─CCS
 │  ├─NDSS
-│  └─USENIX
+│  ├─S&P
+│  ├─USENIX
+│  ├─USENIX Security
+│  └─...... 
 └─src
-    └─crawler
-
+    ├─crawler
+    ├─main.py
+    └─settings.py
 ```
 - chromedriver-user-data：运行时，如果使用浏览器爬取会自动生成
 - dblp_cache：已收集的dblp数据，可用于加速收集，跳过已收集的论文信息。
 - results：已收集的论文数据，可直接使用，不必重复爬取。
 - src：源码
   - main.py：程序入口
+  - settings.py：支持的会议/期刊，以及一些全局配置
   - crawler：从出版社收集摘要的crawler
 
 
 
-## Features
+## :sparkles: Features
 
 ### 断点存续
 
@@ -107,11 +148,26 @@ python main.py --name ccs --year 2024 --dblp-interval 10 --abs-interval 60 --out
 
 > 注：为了方便实现，本项目是按照dblp给出的论文**顺序**收集并记录缓存/结果，断点存续时也是根据缓存/结果中记录的个数来跳过的，并非根据每篇论文是否保存判断
 
+
+
 ### 多种保存格式
 
-支持以csv、md、json、bibtex多种结果保存
+TODO: 支持以csv、md、json、bibtex多种结果保存
 
 根据output文件后缀自动选择
+
+
+
+## :handshake: Contributing
+
+欢迎任何形式的贡献！
+
+- **提交论文收集结果**：提交 Pull Request
+    - 新增会议/期刊收集结果的文件到 `results` 对应目录下，命名格式为`{会议缩写}-{年份}.xxx`
+    - 如果可以，也请提供 `dblp_cache` 中的对应缓存文件
+
+- **添加对新会议/期刊的支持**：提交 Pull Request
+- **其他改进意见和想法**
 
 
 
