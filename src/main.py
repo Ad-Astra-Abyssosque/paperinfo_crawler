@@ -88,6 +88,7 @@ def collect_journal_metadata(
     need_abstract: bool,
     output: str,
     dblp_req_itv: float,
+    abs_itv: int,
     save_pickle: bool,
     count: int = -1,
     skip: list[int] = [],
@@ -117,7 +118,7 @@ def collect_journal_metadata(
         #         dblp_req_itv,
         #     )
         # )
-        collect_abstract2(entry_metadata_list, publisher, output, req_itv=dblp_req_itv, count=count, skip=skip)
+        collect_abstract2(entry_metadata_list, publisher, output, req_itv=abs_itv, count=count, skip=skip)
 
     return entry_metadata_list
 
@@ -309,10 +310,10 @@ def main():
                 saved_fn = "{}{}.bib".format(name, volume)
             else:
                 saved_fn = args.save
-            logger.debug("saved_fn:{}".format(saved_fn))
+            # logger.debug("saved_fn:{}".format(saved_fn))
             if from_pkl_fn is None:
                 collect_journal_metadata(
-                    name, volume, publisher, need_abs, args.output, dblp_req_itv, save_pkl
+                    name, volume, publisher, need_abs, args.output, dblp_req_itv, abs_itv, save_pkl, count=args.count, skip=args.skip
                 )
                 exit(0)
             else:
@@ -342,7 +343,7 @@ def main():
         for vol in range(start_vol, end_vol + 1):
             saved_fn = "{}{}.bib".format(name, vol)
             collect_journal_metadata(
-                name, str(vol), publisher, need_abs, saved_fn, dblp_req_itv, save_pkl
+                name, str(vol), publisher, need_abs, args.output, dblp_req_itv, abs_itv, save_pkl, count=args.count, skip=args.skip
             )
     else:
         # Conference

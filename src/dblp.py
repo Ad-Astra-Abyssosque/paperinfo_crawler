@@ -55,6 +55,10 @@ def get_conf_url(name: str, year: str) -> tuple[str, str]:
             dblp_url, int(year) - 2022
         )
         entry_type_in_url = "journal"
+    elif name == "ase":
+        conf_url = f"{dblp_url}conf/kbse/{name}{year}.html"
+    elif name == "fse":
+        conf_url = f"{dblp_url}conf/sigsoft/{name}{year}.html"
     else:
         conf_url = "{}conf/{}/{}{}.html".format(dblp_url, name, name, year)
 
